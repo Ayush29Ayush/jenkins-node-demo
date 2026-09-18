@@ -311,8 +311,11 @@ fi
 echo "Checking whether port $APP_PORT is in use..."
 
 PORT_PID=$(ss -ltnpH "sport = :$APP_PORT" 2>/dev/null \
-    | sed -n 's/.*pid=\([0-9]\+\).*/\1/p' \
-    | head -n 1)
+    | awk -F 'pid=' 'NF > 1 {
+        split($2, parts, ",")
+        print parts[1]
+        exit
+    }')
 
 
 if echo "$PORT_PID" | grep -Eq '^[0-9]+$'; then
