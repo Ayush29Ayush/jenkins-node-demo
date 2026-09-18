@@ -284,6 +284,10 @@ if [ -f "$DEPLOY_ROOT/app.pid" ]; then
 
         sleep 2
 
+    else
+
+        echo "No active process found for PID: $OLD_PID"
+
     fi
 
 fi
@@ -321,20 +325,43 @@ echo "Application PID: $NEW_PID"
 
 
 # ==========================================
-# VERIFY APPLICATION PROCESS
+# VERIFY APPLICATION HEALTH
 # ==========================================
 
-echo "Checking whether application process started..."
+echo "Checking application health..."
 
 sleep 2
 
-if ! kill -0 "$NEW_PID" 2>/dev/null; then
+if curl --fail \
+    --silent \
+    --show-error \
+    --max-time 10 \
+    http://127.0.0.1:3000/health \
+    > /tmp/application-health.json; then
 
-    echo "ERROR: Application failed to start"
+    echo "Application started successfully"
+
+    echo "Health response:"
+
+    cat /tmp/application-health.json
+
+    echo
+
+else
+
+    echo "ERROR: Application health check failed"
 
     echo "Application logs:"
 
     cat "$DEPLOY_ROOT/app.log" || true
+
+    echo "Running Node.js processes:"
+
+    ps aux | grep '[n]ode' || true
+
+    echo "Port 3000 status:"
+
+    ss -ltnp | grep ':3000' || true
 
     exit 1
 
@@ -342,12 +369,14 @@ fi
 
 
 # ==========================================
-# CLEAN TEMPORARY ARTIFACT
+# CLEAN TEMPORARY FILES
 # ==========================================
 
-echo "Cleaning temporary artifact..."
+echo "Cleaning temporary files..."
 
 rm -f "/tmp/$ARTIFACT"
+
+rm -f /tmp/application-health.json
 
 
 # ==========================================
@@ -412,6 +441,7 @@ REMOTE_SCRIPT
                             "sleep 2 && curl --fail --silent --show-error http://127.0.0.1:3000/health"
 
                         echo
+
                         echo "Smoke test passed!"
                     '''
                 }
