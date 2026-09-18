@@ -191,19 +191,61 @@ pipeline {
 
 set -e
 
+
+# ==========================================
+# LOAD NVM AND NODE.JS 26
+# ==========================================
+
+export NVM_DIR="$HOME/.nvm"
+
+if [ -s "$NVM_DIR/nvm.sh" ]; then
+    . "$NVM_DIR/nvm.sh"
+else
+    echo "ERROR: NVM is not installed for user: $(whoami)"
+    exit 1
+fi
+
+nvm use 26
+
+
+echo "Node version:"
+node --version
+
+echo "NPM version:"
+npm --version
+
+command -v node
+command -v npm
+
+
+# ==========================================
+# DEPLOYMENT VARIABLES
+# ==========================================
+
 ARTIFACT="node-demo-${BUILD_NUMBER}.tar.gz"
 
 RELEASE_DIR="$DEPLOY_ROOT/releases/$BUILD_NUMBER"
 
+
+echo "=========================================="
 echo "Deployment started"
 echo "Build number: $BUILD_NUMBER"
 echo "Release directory: $RELEASE_DIR"
+echo "=========================================="
 
+
+# ==========================================
+# CREATE RELEASE DIRECTORY
+# ==========================================
 
 echo "Creating release directory..."
 
 mkdir -p "$RELEASE_DIR"
 
+
+# ==========================================
+# EXTRACT ARTIFACT
+# ==========================================
 
 echo "Extracting artifact..."
 
@@ -214,10 +256,18 @@ tar -xzf "/tmp/$ARTIFACT" \
 cd "$RELEASE_DIR"
 
 
+# ==========================================
+# INSTALL PRODUCTION DEPENDENCIES
+# ==========================================
+
 echo "Installing production dependencies..."
 
 npm ci --omit=dev
 
+
+# ==========================================
+# STOP PREVIOUS APPLICATION
+# ==========================================
 
 echo "Stopping previous application..."
 
@@ -239,15 +289,24 @@ if [ -f "$DEPLOY_ROOT/app.pid" ]; then
 fi
 
 
+# ==========================================
+# UPDATE CURRENT RELEASE SYMLINK
+# ==========================================
+
 echo "Updating current release symlink..."
 
 ln -sfn "$RELEASE_DIR" \
     "$DEPLOY_ROOT/current"
 
 
+# ==========================================
+# START APPLICATION
+# ==========================================
+
 echo "Starting new application..."
 
 cd "$DEPLOY_ROOT/current"
+
 
 APP_VERSION="$BUILD_NUMBER" \
 PORT=3000 \
@@ -261,13 +320,17 @@ echo "$NEW_PID" > "$DEPLOY_ROOT/app.pid"
 echo "Application PID: $NEW_PID"
 
 
+# ==========================================
+# VERIFY APPLICATION PROCESS
+# ==========================================
+
 echo "Checking whether application process started..."
 
 sleep 2
 
 if ! kill -0 "$NEW_PID" 2>/dev/null; then
 
-    echo "Application failed to start"
+    echo "ERROR: Application failed to start"
 
     echo "Application logs:"
 
@@ -278,10 +341,19 @@ if ! kill -0 "$NEW_PID" 2>/dev/null; then
 fi
 
 
+# ==========================================
+# CLEAN TEMPORARY ARTIFACT
+# ==========================================
+
 echo "Cleaning temporary artifact..."
 
 rm -f "/tmp/$ARTIFACT"
 
+
+# ==========================================
+# REMOVE OLD RELEASES
+# KEEP LATEST 5
+# ==========================================
 
 echo "Removing old releases..."
 
@@ -289,14 +361,20 @@ find "$DEPLOY_ROOT/releases" \
     -mindepth 1 \
     -maxdepth 1 \
     -type d \
-    -printf '%T@ %p\\n' 2>/dev/null \
+    -printf '%T@ %p\n' 2>/dev/null \
     | sort -nr \
     | tail -n +6 \
     | cut -d' ' -f2- \
     | xargs -r rm -rf
 
 
+# ==========================================
+# DEPLOYMENT COMPLETE
+# ==========================================
+
+echo "=========================================="
 echo "Deployment completed successfully!"
+echo "=========================================="
 
 REMOTE_SCRIPT
 
