@@ -214,7 +214,10 @@ node --version
 echo "NPM version:"
 npm --version
 
+echo "Node path:"
 command -v node
+
+echo "NPM path:"
 command -v npm
 
 
@@ -225,6 +228,8 @@ command -v npm
 ARTIFACT="node-demo-${BUILD_NUMBER}.tar.gz"
 
 RELEASE_DIR="$DEPLOY_ROOT/releases/$BUILD_NUMBER"
+
+APP_PORT=3000
 
 
 echo "=========================================="
@@ -252,7 +257,6 @@ echo "Extracting artifact..."
 tar -xzf "/tmp/$ARTIFACT" \
     -C "$RELEASE_DIR"
 
-
 cd "$RELEASE_DIR"
 
 
@@ -271,24 +275,104 @@ npm ci --omit=dev
 
 echo "Stopping previous application..."
 
+OLD_PID=""
+
 if [ -f "$DEPLOY_ROOT/app.pid" ]; then
 
-    OLD_PID=$(cat "$DEPLOY_ROOT/app.pid" || true)
+    OLD_PID=$(cat "$DEPLOY_ROOT/app.pid" 2>/dev/null || true)
 
-    if [ -n "$OLD_PID" ] && \
-       kill -0 "$OLD_PID" 2>/dev/null; then
+    if echo "$OLD_PID" | grep -Eq '^[0-9]+$'; then
 
-        echo "Stopping process: $OLD_PID"
+        if kill -0 "$OLD_PID" 2>/dev/null; then
 
-        kill "$OLD_PID" || true
+            echo "Stopping application using PID file: $OLD_PID"
 
-        sleep 2
+            kill "$OLD_PID" 2>/dev/null || true
+
+        else
+
+            echo "PID $OLD_PID is not running"
+
+        fi
 
     else
 
-        echo "No active process found for PID: $OLD_PID"
+        echo "PID file contains an invalid PID"
 
     fi
+
+fi
+
+
+# ==========================================
+# FIND APPLICATION PROCESS USING PORT
+# ==========================================
+
+echo "Checking whether port $APP_PORT is in use..."
+
+PORT_PID=$(ss -ltnpH "sport = :$APP_PORT" 2>/dev/null \
+    | sed -n 's/.*pid=\([0-9]\+\).*/\1/p' \
+    | head -n 1)
+
+
+if echo "$PORT_PID" | grep -Eq '^[0-9]+$'; then
+
+    if [ "$PORT_PID" != "$OLD_PID" ]; then
+
+        echo "Found process $PORT_PID using port $APP_PORT"
+
+        echo "Stopping process using port $APP_PORT..."
+
+        kill "$PORT_PID" 2>/dev/null || true
+
+    fi
+
+else
+
+    echo "No process ID found for port $APP_PORT"
+
+fi
+
+
+# ==========================================
+# WAIT FOR PORT TO BE RELEASED
+# ==========================================
+
+echo "Waiting for port $APP_PORT to be released..."
+
+PORT_RELEASED=false
+
+for i in $(seq 1 10); do
+
+    if ss -ltnH "sport = :$APP_PORT" 2>/dev/null \
+        | grep -q ":$APP_PORT"; then
+
+        echo "Port $APP_PORT is still in use. Waiting..."
+
+        sleep 1
+
+    else
+
+        PORT_RELEASED=true
+
+        echo "Port $APP_PORT is available"
+
+        break
+
+    fi
+
+done
+
+
+if [ "$PORT_RELEASED" != "true" ]; then
+
+    echo "ERROR: Port $APP_PORT was not released"
+
+    echo "Current port status:"
+
+    ss -ltnpH "sport = :$APP_PORT" 2>/dev/null || true
+
+    exit 1
 
 fi
 
@@ -313,7 +397,7 @@ cd "$DEPLOY_ROOT/current"
 
 
 APP_VERSION="$BUILD_NUMBER" \
-PORT=3000 \
+PORT="$APP_PORT" \
 nohup node dist/server.js \
     > "$DEPLOY_ROOT/app.log" 2>&1 &
 
@@ -330,24 +414,41 @@ echo "Application PID: $NEW_PID"
 
 echo "Checking application health..."
 
-sleep 2
+HEALTH_CHECK_PASSED=false
 
-if curl --fail \
-    --silent \
-    --show-error \
-    --max-time 10 \
-    http://127.0.0.1:3000/health \
-    > /tmp/application-health.json; then
+for i in $(seq 1 10); do
 
-    echo "Application started successfully"
+    if curl --fail \
+        --silent \
+        --show-error \
+        --max-time 5 \
+        "http://127.0.0.1:$APP_PORT/health" \
+        > /tmp/application-health.json; then
 
-    echo "Health response:"
+        HEALTH_CHECK_PASSED=true
 
-    cat /tmp/application-health.json
+        echo "Application started successfully"
 
-    echo
+        echo "Health response:"
 
-else
+        cat /tmp/application-health.json
+
+        echo
+
+        break
+
+    else
+
+        echo "Health check attempt $i/10 failed. Retrying..."
+
+        sleep 1
+
+    fi
+
+done
+
+
+if [ "$HEALTH_CHECK_PASSED" != "true" ]; then
 
     echo "ERROR: Application health check failed"
 
@@ -359,11 +460,26 @@ else
 
     ps aux | grep '[n]ode' || true
 
-    echo "Port 3000 status:"
+    echo "Port status:"
 
-    ss -ltnp | grep ':3000' || true
+    ss -ltnpH "sport = :$APP_PORT" 2>/dev/null || true
 
     exit 1
+
+fi
+
+
+# ==========================================
+# VERIFY NEW PROCESS
+# ==========================================
+
+echo "Verifying new application process..."
+
+if ! kill -0 "$NEW_PID" 2>/dev/null; then
+
+    echo "WARNING: Recorded PID $NEW_PID is not active"
+
+    echo "The health endpoint passed, but the recorded process was not found"
 
 fi
 
@@ -438,7 +554,7 @@ REMOTE_SCRIPT
                             -o ConnectionAttempts=3 \
                             -o StrictHostKeyChecking=accept-new \
                             "$EC2_USER@$EC2_HOST" \
-                            "sleep 2 && curl --fail --silent --show-error http://127.0.0.1:3000/health"
+                            "curl --fail --silent --show-error --max-time 10 http://127.0.0.1:3000/health"
 
                         echo
 
