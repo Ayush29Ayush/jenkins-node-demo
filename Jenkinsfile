@@ -305,34 +305,34 @@ fi
 
 
 # ==========================================
-# FIND APPLICATION PROCESS USING PORT
+# STOP ANY PROCESS USING APPLICATION PORT
 # ==========================================
 
 echo "Checking whether port $APP_PORT is in use..."
 
-PORT_PID=$(ss -ltnpH "sport = :$APP_PORT" 2>/dev/null \
-    | awk -F 'pid=' 'NF > 1 {
-        split($2, parts, ",")
-        print parts[1]
-        exit
-    }')
+if ss -ltnH "sport = :$APP_PORT" 2>/dev/null \
+    | grep -q ":$APP_PORT"; then
 
+    echo "Port $APP_PORT is currently in use"
 
-if echo "$PORT_PID" | grep -Eq '^[0-9]+$'; then
+    echo "Attempting to stop process using port $APP_PORT..."
 
-    if [ "$PORT_PID" != "$OLD_PID" ]; then
+    if command -v fuser >/dev/null 2>&1; then
 
-        echo "Found process $PORT_PID using port $APP_PORT"
+        fuser -k "$APP_PORT/tcp" 2>/dev/null || true
 
-        echo "Stopping process using port $APP_PORT..."
+    else
 
-        kill "$PORT_PID" 2>/dev/null || true
+        echo "ERROR: fuser command is not installed"
+        echo "Install it using: sudo apt install psmisc"
+
+        exit 1
 
     fi
 
 else
 
-    echo "No process ID found for port $APP_PORT"
+    echo "Port $APP_PORT is available"
 
 fi
 
@@ -345,7 +345,7 @@ echo "Waiting for port $APP_PORT to be released..."
 
 PORT_RELEASED=false
 
-for i in $(seq 1 10); do
+for i in $(seq 1 15); do
 
     if ss -ltnH "sport = :$APP_PORT" 2>/dev/null \
         | grep -q ":$APP_PORT"; then
@@ -370,8 +370,6 @@ done
 if [ "$PORT_RELEASED" != "true" ]; then
 
     echo "ERROR: Port $APP_PORT was not released"
-
-    echo "Current port status:"
 
     ss -ltnpH "sport = :$APP_PORT" 2>/dev/null || true
 
