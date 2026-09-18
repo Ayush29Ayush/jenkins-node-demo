@@ -25,11 +25,9 @@ pipeline {
         // ==========================================
 
         stage('Checkout') {
-
             steps {
                 checkout scm
             }
-
         }
 
 
@@ -38,11 +36,9 @@ pipeline {
         // ==========================================
 
         stage('Install Dependencies') {
-
             steps {
                 sh 'npm ci'
             }
-
         }
 
 
@@ -51,11 +47,9 @@ pipeline {
         // ==========================================
 
         stage('Lint') {
-
             steps {
                 sh 'npm run lint'
             }
-
         }
 
 
@@ -70,16 +64,13 @@ pipeline {
             }
 
             post {
-
                 always {
-
-                    junit testResults: 'reports/junit/junit.xml',
-                          allowEmptyResults: true
-
+                    junit(
+                        testResults: 'reports/junit/junit.xml',
+                        allowEmptyResults: true
+                    )
                 }
-
             }
-
         }
 
 
@@ -88,11 +79,9 @@ pipeline {
         // ==========================================
 
         stage('Build') {
-
             steps {
                 sh 'npm run build'
             }
-
         }
 
 
@@ -107,16 +96,21 @@ pipeline {
                 sh '''
                     set -e
 
-                    tar -czf node-demo-${BUILD_NUMBER}.tar.gz \
-                        dist package.json package-lock.json
+                    ARTIFACT="node-demo-${BUILD_NUMBER}.tar.gz"
 
+                    echo "Creating artifact: ${ARTIFACT}"
+
+                    tar -czf "${ARTIFACT}" \
+                        dist \
+                        package.json \
+                        package-lock.json
                 '''
 
-                archiveArtifacts artifacts: "node-demo-${BUILD_NUMBER}.tar.gz",
-                                 fingerprint: true
-
+                archiveArtifacts(
+                    artifacts: "node-demo-${BUILD_NUMBER}.tar.gz",
+                    fingerprint: true
+                )
             }
-
         }
 
 
@@ -135,22 +129,24 @@ pipeline {
                 sshagent(credentials: ['ec2-deployment-key']) {
 
                     sh '''
-
                         set -e
+
+                        echo "Resolving EC2 hostname..."
+
+                        getent hosts "$EC2_HOST"
 
                         echo "Testing SSH connection to EC2..."
 
-                        ssh \
+                        ssh -4 \
+                            -o BatchMode=yes \
+                            -o ConnectTimeout=10 \
+                            -o ConnectionAttempts=3 \
                             -o StrictHostKeyChecking=accept-new \
                             "$EC2_USER@$EC2_HOST" \
                             "echo Connected to EC2 && whoami && hostname"
-
                     '''
-
                 }
-
             }
-
         }
 
 
@@ -169,14 +165,15 @@ pipeline {
                 sshagent(credentials: ['ec2-deployment-key']) {
 
                     sh '''
-
                         set -e
 
                         ARTIFACT="node-demo-${BUILD_NUMBER}.tar.gz"
 
                         echo "Uploading artifact to EC2..."
 
-                        scp \
+                        scp -4 \
+                            -o BatchMode=yes \
+                            -o ConnectTimeout=10 \
                             -o StrictHostKeyChecking=accept-new \
                             "$ARTIFACT" \
                             "$EC2_USER@$EC2_HOST:/tmp/$ARTIFACT"
@@ -184,108 +181,128 @@ pipeline {
 
                         echo "Deploying application to EC2..."
 
-
-                        ssh \
+                        ssh -4 \
+                            -o BatchMode=yes \
+                            -o ConnectTimeout=10 \
+                            -o ConnectionAttempts=3 \
                             -o StrictHostKeyChecking=accept-new \
                             "$EC2_USER@$EC2_HOST" \
                             "BUILD_NUMBER=$BUILD_NUMBER DEPLOY_ROOT=$DEPLOY_ROOT bash -s" <<'REMOTE_SCRIPT'
 
+set -e
 
-                            set -e
+ARTIFACT="node-demo-${BUILD_NUMBER}.tar.gz"
 
+RELEASE_DIR="$DEPLOY_ROOT/releases/$BUILD_NUMBER"
 
-                            ARTIFACT="node-demo-${BUILD_NUMBER}.tar.gz"
-
-                            RELEASE_DIR="$DEPLOY_ROOT/releases/$BUILD_NUMBER"
-
-
-                            echo "Creating release directory..."
-
-                            mkdir -p "$RELEASE_DIR"
+echo "Deployment started"
+echo "Build number: $BUILD_NUMBER"
+echo "Release directory: $RELEASE_DIR"
 
 
-                            echo "Extracting artifact..."
+echo "Creating release directory..."
 
-                            tar -xzf "/tmp/$ARTIFACT" \
-                                -C "$RELEASE_DIR"
-
-
-                            cd "$RELEASE_DIR"
+mkdir -p "$RELEASE_DIR"
 
 
-                            echo "Installing production dependencies..."
+echo "Extracting artifact..."
 
-                            npm ci --omit=dev
-
-
-                            echo "Stopping previous application..."
+tar -xzf "/tmp/$ARTIFACT" \
+    -C "$RELEASE_DIR"
 
 
-                            if [ -f "$DEPLOY_ROOT/app.pid" ]; then
-
-                                OLD_PID=$(cat "$DEPLOY_ROOT/app.pid" || true)
+cd "$RELEASE_DIR"
 
 
-                                if [ -n "$OLD_PID" ] && \
-                                   kill -0 "$OLD_PID" 2>/dev/null; then
+echo "Installing production dependencies..."
+
+npm ci --omit=dev
 
 
-                                    echo "Stopping process: $OLD_PID"
+echo "Stopping previous application..."
 
-                                    kill "$OLD_PID" || true
+if [ -f "$DEPLOY_ROOT/app.pid" ]; then
 
+    OLD_PID=$(cat "$DEPLOY_ROOT/app.pid" || true)
 
-                                    sleep 2
+    if [ -n "$OLD_PID" ] && \
+       kill -0 "$OLD_PID" 2>/dev/null; then
 
+        echo "Stopping process: $OLD_PID"
 
-                                fi
+        kill "$OLD_PID" || true
 
-                            fi
+        sleep 2
 
+    fi
 
-                            echo "Updating current release symlink..."
-
-
-                            ln -sfn "$RELEASE_DIR" \
-                                "$DEPLOY_ROOT/current"
-
-
-                            echo "Starting new application..."
+fi
 
 
-                            cd "$DEPLOY_ROOT/current"
+echo "Updating current release symlink..."
+
+ln -sfn "$RELEASE_DIR" \
+    "$DEPLOY_ROOT/current"
 
 
-                            APP_VERSION="$BUILD_NUMBER" \
-                            PORT=3000 \
-                            nohup node dist/server.js \
-                            > "$DEPLOY_ROOT/app.log" 2>&1 &
+echo "Starting new application..."
+
+cd "$DEPLOY_ROOT/current"
+
+APP_VERSION="$BUILD_NUMBER" \
+PORT=3000 \
+nohup node dist/server.js \
+    > "$DEPLOY_ROOT/app.log" 2>&1 &
+
+NEW_PID=$!
+
+echo "$NEW_PID" > "$DEPLOY_ROOT/app.pid"
+
+echo "Application PID: $NEW_PID"
 
 
-                            echo $! > "$DEPLOY_ROOT/app.pid"
+echo "Checking whether application process started..."
+
+sleep 2
+
+if ! kill -0 "$NEW_PID" 2>/dev/null; then
+
+    echo "Application failed to start"
+
+    echo "Application logs:"
+
+    cat "$DEPLOY_ROOT/app.log" || true
+
+    exit 1
+
+fi
 
 
-                            echo "Application PID:"
+echo "Cleaning temporary artifact..."
 
-                            cat "$DEPLOY_ROOT/app.pid"
-
-
-                            echo "Cleaning temporary artifact..."
-
-                            rm -f "/tmp/$ARTIFACT"
+rm -f "/tmp/$ARTIFACT"
 
 
-                            echo "Deployment completed successfully!"
+echo "Removing old releases..."
 
+find "$DEPLOY_ROOT/releases" \
+    -mindepth 1 \
+    -maxdepth 1 \
+    -type d \
+    -printf '%T@ %p\\n' 2>/dev/null \
+    | sort -nr \
+    | tail -n +6 \
+    | cut -d' ' -f2- \
+    | xargs -r rm -rf
+
+
+echo "Deployment completed successfully!"
 
 REMOTE_SCRIPT
 
                     '''
-
                 }
-
             }
-
         }
 
 
@@ -304,26 +321,23 @@ REMOTE_SCRIPT
                 sshagent(credentials: ['ec2-deployment-key']) {
 
                     sh '''
-
                         set -e
 
                         echo "Running remote smoke test..."
 
-
-                        ssh \
+                        ssh -4 \
+                            -o BatchMode=yes \
+                            -o ConnectTimeout=10 \
+                            -o ConnectionAttempts=3 \
                             -o StrictHostKeyChecking=accept-new \
                             "$EC2_USER@$EC2_HOST" \
-                            "sleep 2 && curl -f http://127.0.0.1:3000/health"
+                            "sleep 2 && curl --fail --silent --show-error http://127.0.0.1:3000/health"
 
-
+                        echo
                         echo "Smoke test passed!"
-
                     '''
-
                 }
-
             }
-
         }
 
     }
@@ -336,17 +350,16 @@ REMOTE_SCRIPT
     post {
 
         success {
-
             echo 'PIPELINE SUCCESSFUL'
-
         }
 
         failure {
-
             echo 'PIPELINE FAILED - deployment was blocked'
-
         }
 
+        always {
+            echo 'Pipeline execution completed.'
+        }
     }
 
 }
